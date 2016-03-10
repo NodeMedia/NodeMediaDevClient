@@ -1,0 +1,495 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Application xmlns:fx="http://ns.adobe.com/mxml/2009"
+                xmlns:s="library://ns.adobe.com/flex/spark"
+                xmlns:mx="library://ns.adobe.com/flex/mx" minWidth="1300" minHeight="600" applicationComplete="init()" paddingBottom="10" paddingLeft="10" paddingRight="10" paddingTop="10">
+
+    <fx:Style>
+        @namespace s "library://ns.adobe.com/flex/spark";
+        @namespace mx "library://ns.adobe.com/flex/mx";
+
+        mx|Panel {
+            backgroundColor: #869ca7;
+        }
+
+    </fx:Style>
+
+
+    <fx:Script>
+		<![CDATA[
+        /*
+         * Usage : http://<host>/VideoPublisher/[?options]
+         *
+         * Options are :
+         *
+         * - url=<url>              Set the url to connect to (automatic connection)
+         *
+         * Example : http://127.0.0.1/VideoPlayer/?url=rtmfp://127.0.0.1/app/test123 will connect automatically to "app" on localhost and publish "test123"
+         */
+
+        import mx.collections.ArrayList;
+        import mx.controls.Alert;
+        import mx.events.FlexEvent;
+        import mx.utils.URLUtil;
+
+        private var _publishName:String;
+        private var _urlPath:String;
+
+        private var _mic:Microphone;
+        private var _cam:Camera;
+
+        private var _connection:NetConnection;
+        private var _outstream:NetStream;
+
+        private var _videoCodec:H264VideoStreamSettings;
+
+        [Bindable]
+        private var listCam:ArrayList = new ArrayList();
+        [Bindable]
+        private var listVideoCodec:ArrayList = new ArrayList(["H264 Baseline", "H264 Main", "Sorenson"]);
+        [Bindable]
+        private var listAudioCodec:ArrayList = new ArrayList(["NellyMoser", "Speex", "Off"]);
+        [Bindable]
+        private var listEchoCancellation:ArrayList = new ArrayList(["Normal", "Headphones", "Usb Device", "Off", "Basic Micro"]);
+        [Bindable]
+        private var listResolution:ArrayList = new ArrayList(["160x120", "320x240", "480x360", "640x480", "1280x960", "320x180", "480x270", "640x360", "1280x720"]);
+
+
+        //for play
+        private var _connection_play:NetConnection;
+        private var _stream_play:NetStream;
+        private var _name_play:String;
+        private var _url_play:String;
+        private var _videoUIWidth:int = 360;
+        private var _videoUIHeight:int = 280;
+        private var _vid:Video = new Video(_videoUIWidth, _videoUIHeight);
+
+        private var _videoWidth:Number;
+        private var _videoHeight:Number;
+
+        // init camera
+        private function init():void {
+            // Add RTMP video player
+            _vid.opaqueBackground = 0x000000;
+            _vid.smoothing = true;
+            videoUI.addChild(_vid);
+
+            // Init microphone
+            comboAudioCodec.selectedIndex = 1;
+            onEchoChanged();
+            onSilenceChange();
+            onNoiseChange();
+
+            // Init camera parameters and select the first one
+            for (var index:String in Camera.names) {
+                listCam.addItem(Camera.names[index]);
+            }
+            listCam.addItem("Off");
+
+            comboCam.selectedIndex = 0;
+            onCamChange();
+
+            // Select the first video codec & set video quality
+            comboVideoCodec.selectedIndex = 0;
+            onVideoCodec();
+
+            // Generate dynamic url
+            var url:String = this.loaderInfo.url;
+            var domainNPath:Array = url.match(/(:\/\/.+)\//);
+            if (URLUtil.getProtocol(url) != "file") {
+                address.text = "rtmp" + domainNPath[1] + "/live/stream";
+                play_address.text = "rtmp" + domainNPath[1] + "/live/stream";
+            }
+
+
+            // Manage parameters
+            if (loaderInfo.parameters) {
+
+                // Finally, automatically connect to the url in parameter
+                // url : host + path of the stream
+                if (loaderInfo.parameters.url) {
+                    address.text = loaderInfo.parameters.url;
+                    connect();
+                }
+            }
+
+            //日志始终自动滚动到最新
+            console.addEventListener(FlexEvent.VALUE_COMMIT,onValueCommit);
+
+        }
+        private function onValueCommit(event:FlexEvent):void{
+            console.verticalScrollPosition=console.maxVerticalScrollPosition;
+        }
+
+        // net status handler for the NetConnection : connect the netstream and publish
+        private function onStatus(evt:NetStatusEvent):void {
+
+            console.text += "NetConnection event : " + evt.info.code + "\n";
+
+            switch (evt.info.code) {
+                case "NetConnection.Connect.Success":
+
+                    // Classic publishing
+                    if (evt.target == _connection) {
+                        _outstream = new NetStream(_connection);
+                        _outstream.addEventListener(NetStatusEvent.NET_STATUS, onStatusOutstream);
+                        _outstream.attachCamera(_cam);
+                        _outstream.attachAudio(_mic);
+                        _outstream.videoStreamSettings = _videoCodec;
+                        _outstream.publish(_publishName);
+                        var metaData:Object = new Object();
+                        metaData.description = "Recorded using Flex."
+
+                        _outstream.send("@setDataFrame", "onMetaData", metaData);
+
+//                        onReliable(); // set reliability
+                    } else if (evt.target == _connection_play) {
+                        _stream_play = new NetStream(_connection_play);
+                        _vid.attachNetStream(_stream_play);
+                        _stream_play.addEventListener(NetStatusEvent.NET_STATUS, onStatusOutstream);
+                        _stream_play.bufferTime = buffertime.value / 1000;
+                        _stream_play.bufferTimeMax = maxbuffertime.value / 1000;
+                        _stream_play.play(_name_play);
+                        _stream_play.client = this;
+                    }
+                    break;
+                case "NetStream.Connect.Success":
+                    break;
+                case "NetConnection.Connect.Closed":
+                    if (evt.target == _connection) {
+                        btPublish.label = "Publish";
+                    } else if (evt.target == _connection_play) {
+                        btPlay.label = "Play";
+                    }
+
+                    break;
+            }
+        }
+        private function resetVideoLayout(newWidth:int, newHeight:int):void {
+            _videoWidth = newWidth;
+            _videoHeight = newHeight;
+
+            var _videoW:int;
+            var _videoH:int;
+            var _aspectW:int;
+            var _aspectH:int;
+
+            var Aspect_num:Number; //should be an "int" but that gives blank picture with sound
+            Aspect_num = _videoWidth / _videoHeight;
+            console.text += "Aspect_num:"+Aspect_num+" \n";
+            if(Aspect_num >= 1) {
+                //Aspect ratio calculated here..
+                _videoW = _videoUIWidth;
+                _videoH = _videoW / Aspect_num; //or try: _videoW * Aspect_num;
+                _aspectH = (_videoUIHeight - _videoH) / 2;
+
+                _vid.x = 0;
+                _vid.y = _aspectH;
+                _vid.width = _videoW;
+                _vid.height = _videoH;
+                console.text += "_vid.width:"+_vid.width+" "+" _vid.height:"+_vid.height+"\n";
+            } else {
+                _videoH = _videoUIHeight;
+                _videoW = _videoH * Aspect_num;
+                _aspectW = (_videoUIWidth - _videoW) / 2;
+
+                _vid.x = _aspectW;
+                _vid.y = 0;
+                _vid.width = _videoW;
+                _vid.height = _videoH;
+                console.text += "_vid.width:"+_vid.width+" "+" _vid.height:"+_vid.height+"\n";
+            }
+
+
+
+        }
+        public function onMetaData(infoObject:Object):void {
+            console.text += "onMetaData: \n";
+
+            for (var key:String in infoObject) {
+                console.text += " - " + key + ": " + infoObject[key] + "\n";
+            }
+
+            if (infoObject["width"] && infoObject["height"]) {
+                resetVideoLayout(infoObject["width"], infoObject["height"]);
+            }
+        }
+
+        // net status handler for the NetStream
+        private function onStatusOutstream(evt:Event):void {
+            if (evt is AsyncErrorEvent) {
+                console.text += "NetSream error : " + AsyncErrorEvent(evt).text + "\n";
+            } else {
+                var event:NetStatusEvent = NetStatusEvent(evt);
+                console.text += "NetStream event : " + event.info.code + "\n";
+                switch (event.info.code) {
+                    case "NetStream.Video.DimensionChange":
+                        resetVideoLayout(_vid.videoWidth, _vid.videoHeight);
+                        console.text += "Video: "+_vid.videoWidth + "x" + _vid.videoHeight + "\n";
+                        break;
+                }
+            }
+
+        }
+
+        // Connect, then publish (or disconnect)
+        private function connect():void {
+
+            if (_connection) {
+                _connection.close();
+                _connection = null;
+            } else {
+
+                var lastSlash:int = address.text.lastIndexOf("/");
+                _urlPath = address.text.substr(0, lastSlash);
+                _publishName = address.text.substr(lastSlash + 1);
+                if (_publishName == "" || _publishName == "VideoPublisher") {
+                    Alert.show("Please type a publish name");
+                    return;
+                }
+
+                _connection = new NetConnection();
+                _connection.connect(_urlPath);
+                _connection.addEventListener(NetStatusEvent.NET_STATUS, onStatus);
+
+                btPublish.label = "Unpublish";
+            }
+        }
+
+        private function play_connect():void {
+            if (_connection_play) {
+                _connection_play.close();
+                _connection_play = null;
+            } else {
+                var lastSlash:int = play_address.text.lastIndexOf("/");
+                _url_play = play_address.text.substr(0, lastSlash);
+                _name_play = play_address.text.substr(lastSlash + 1);
+                if (_name_play == "") {
+                    Alert.show("Please type a play name");
+                    return;
+                }
+
+                _connection_play = new NetConnection();
+                _connection_play.connect(_url_play);
+                _connection_play.addEventListener(NetStatusEvent.NET_STATUS, onStatus);
+
+                btPlay.label = "Stop";
+            }
+        }
+
+        // Change the codec used for video compression
+        private function onVideoCodec():void {
+            switch (comboVideoCodec.selectedLabel) {
+                case "Sorenson":
+                    _videoCodec = null;
+                    break;
+                case "H264 Baseline":
+                    _videoCodec = new H264VideoStreamSettings();
+                    _videoCodec.setProfileLevel(H264Profile.BASELINE, "3");
+                    break;
+                case "H264 Main":
+                    _videoCodec = new H264VideoStreamSettings();
+                    _videoCodec.setProfileLevel(H264Profile.MAIN, "3");
+                    break;
+            }
+        }
+
+        // Change sound detection level
+        private function onSilenceChange():void {
+            if (_mic)
+                _mic.setSilenceLevel(silenceLevel.value);
+        }
+
+        // Change noise suppression
+        private function onNoiseChange():void {
+            if (_mic)
+                _mic.noiseSuppressionLevel = -noiseSuppression.value;
+        }
+
+        // Change the microphone properties
+        private function onEchoChanged():void {
+            if (comboAudioCodec.selectedLabel == "Off") {
+                _mic = null;
+            } else {
+
+                _mic = Microphone.getMicrophone();// default microphone
+                if (echoCancellation.selectedItem == "Basic Micro") {
+                    _mic.setUseEchoSuppression(cbEchoSuppression.selected);
+                    console.text += "Basic micro : " + _mic + "\n";
+                } else if (Microphone.getEnhancedMicrophone()) {
+                    var options:MicrophoneEnhancedOptions = new MicrophoneEnhancedOptions();
+                    _mic = Microphone.getEnhancedMicrophone();
+                    switch (echoCancellation.selectedItem) {
+                        case "Normal":
+                            options.mode = MicrophoneEnhancedMode.FULL_DUPLEX;
+                            break;
+                        case "Headphones":
+                            options.mode = MicrophoneEnhancedMode.HEADSET;
+                            break;
+                        case "Usb Device":
+                            options.mode = MicrophoneEnhancedMode.HALF_DUPLEX;
+                            break;
+                        case "Off":
+                            options.mode = MicrophoneEnhancedMode.OFF;
+                            break;
+                    }
+                    options.echoPath = (cbEchoPath.selected) ? 256 : 128;
+                    _mic.enhancedOptions = options;
+
+                } else {
+                    console.text += "Enhanced Microphone options are not available with your Microphone\n";
+                }
+
+                if (!_mic) {
+                    console.text += "No Microphone founded\n";
+                    return;
+                }
+                _mic.codec = comboAudioCodec.selectedLabel;
+//                _mic.framesPerPacket = 2;
+                console.text += "_mic.framesPerPacket:"+_mic.framesPerPacket+" \n";
+            }
+            if (_outstream)
+                _outstream.attachAudio(_mic);
+
+            if (_mic)
+                if (_mic.enhancedOptions)
+                    console.text += "Audio parameters changed (codec : " + _mic.codec + ", rate : "+_mic.rate+ ", mode : " + _mic.enhancedOptions.mode + ", echoPath : " + _mic.enhancedOptions.echoPath + ")\n";
+                else
+                    console.text += "Audio parameters changed (codec : " + _mic.codec + ", rate : "+_mic.rate+ ", echo suppression : " + _mic.useEchoSuppression + ")\n";
+        }
+
+        // Change the camera used by player
+        private function onCamChange():void {
+            var selection:String = String(comboCam.selectedIndex);
+            if (selection == "Off")
+                _cam = null;
+            else
+                _cam = Camera.getCamera(selection);
+            player.attachCamera(_cam);
+            if (_outstream)
+                _outstream.attachCamera(_cam);
+
+            // Update video quality
+            onResolutionChange();
+            onQuality();
+            onKeyframes();
+        }
+
+        // Change the resolution of the video
+        private function onResolutionChange():void {
+            if (!_cam) return;
+
+            var resolution:Array = comboResolution.selectedLabel.split("x");
+            var w:int = resolution[0];
+            var h:int = resolution[1];
+            _cam.setMode(w, h, fps.value);
+        }
+
+        // Change the quality of the video
+        private function onQuality():void {
+            if (!_cam) return;
+
+            _cam.setQuality(bandwith.value * 125, quality.value);
+        }
+
+        // Change the video frames rate
+        private function onKeyframes():void {
+            if (!_cam) return;
+
+            _cam.setKeyFrameInterval(keyframes.value);
+        }
+
+        // Change audio/video reliability
+        //For RTMFP connections, specifies whether video is sent with full reliability.
+        //        private function onReliable():void {
+        //            if (_outstream) {
+        //                _outstream.videoReliable = cbVideoReliable.selected;
+        //                _outstream.audioReliable = cbAudioReliable.selected;
+        //            }
+        //        }
+        ]]>
+	</fx:Script>
+    <mx:HBox width="1280" height="580" horizontalAlign="center">
+        <mx:VBox width="800" height="580" horizontalAlign="left">
+            <mx:HBox>
+                <mx:VBox width="430">
+                    <mx:Label text="Player" fontWeight="bold"/>
+                    <mx:HBox width="100%">
+                        <mx:Label text="Address"/>
+                        <mx:TextInput width="100%" text="rtmp://192.168.0.10/live/stream" id="play_address"/>
+                        <mx:Button label="Play" click="play_connect()" id="btPlay"/>
+                    </mx:HBox>
+                    <mx:Panel title="Stream Settings" width="100%">
+                        <mx:HBox width="100%">
+                            <mx:Label text="BufferTime"/>
+                            <s:NumericStepper id="buffertime" minimum="100" maximum="5000" value="1000" />
+                            <mx:Label text="ms"/>
+                            <mx:Label text="MaxBufferTime"/>
+                            <s:NumericStepper id="maxbuffertime" minimum="200" maximum="5000" value="2000" />
+                            <mx:Label text="ms"/>
+                        </mx:HBox>
+                    </mx:Panel>
+                </mx:VBox>
+                <mx:UIComponent id="videoUI" width="360" height="280"/>
+            </mx:HBox>
+            <mx:VRule height="100%" visible="false"/>
+            <mx:HBox>
+                <mx:VBox width="430">
+                    <mx:Label text="Publisher" fontWeight="bold"/>
+                    <mx:HBox width="100%">
+                        <mx:Label text="Address"/>
+                        <mx:TextInput width="100%" text="rtmp://192.168.0.10/live/stream" id="address"/>
+                        <mx:Button label="Publish" click="connect()" id="btPublish"/>
+                    </mx:HBox>
+                    <mx:Panel title="Video" width="100%">
+                        <mx:HBox width="100%">
+                            <mx:Label text="Camera"/>
+                            <mx:ComboBox id="comboCam" dataProvider="{listCam}" change="onCamChange()" editable="false"/>
+                            <s:NumericStepper id="fps" minimum="1" maximum="60" change="onCamChange()" value="15" />
+                            <mx:Label text="Fps"/>
+                        </mx:HBox>
+                        <mx:HBox>
+                            <mx:Label text="Quality"/>
+                            <s:NumericStepper id="quality" minimum="0" maximum="100" change="onQuality()" toolTip="0 means variable"/>
+                            <mx:Label text="%"/>
+                            <mx:ComboBox id="comboResolution" dataProvider="{listResolution}" change="onResolutionChange()" selectedItem="640x480" editable="false"/>
+                            <s:NumericStepper id="bandwith" minimum="0" maximum="20480" stepSize="1" change="onQuality()" value="400" toolTip="0 means variable (it's Kilobits, not Kilobytes!)"/>
+                            <mx:Label text="Kbps"/>
+                        </mx:HBox>
+                        <mx:HBox width="100%">
+                            <mx:Label text="Codec"/>
+                            <mx:ComboBox id="comboVideoCodec" dataProvider="{listVideoCodec}" change="onVideoCodec()" editable="false"/>
+                            <mx:Label text="Keyframes"/>
+                            <s:NumericStepper id="keyframes" minimum="1" maximum="48" change="onKeyframes()" value="15"/>
+                            <!--<s:CheckBox selected="true" label="Reliable" change="onReliable()" id="cbVideoReliable"/>-->
+                        </mx:HBox>
+                    </mx:Panel>
+
+                    <mx:Panel title="Audio" width="100%">
+                        <mx:HBox width="100%">
+                            <mx:Label text="Codec"/>
+                            <mx:ComboBox id="comboAudioCodec" dataProvider="{listAudioCodec}" change="onEchoChanged()" editable="false"/>
+                            <mx:Label text="Echo Cancellation"/>
+                            <mx:ComboBox id="echoCancellation" dataProvider="{listEchoCancellation}" change="onEchoChanged();"/>
+                        </mx:HBox>
+                        <mx:HBox width="100%">
+                            <mx:Label text="Silence level*" toolTip="Sets the minimum input level that should be considered sound" />
+                            <s:NumericStepper id="silenceLevel" minimum="0" maximum="100" change="onSilenceChange()" value="0"/>
+                            <mx:Label text="Noise Suppression*" toolTip="Only applied to Speex compression" />
+                            <s:NumericStepper id="noiseSuppression" minimum="0" maximum="100" change="onNoiseChange()" value="30"/>
+                            <!--<s:CheckBox selected="true" label="Reliable" change="onReliable()" id="cbAudioReliable"/>-->
+                        </mx:HBox>
+                        <mx:HBox width="100%">
+                            <s:CheckBox selected="false" label="EchoPath 256ms*" change="onEchoChanged()" id="cbEchoPath" toolTip="enhanced option, change echo path length (default is 128ms)" />
+                            <s:CheckBox selected="false" label="Echo Suppression*" change="onEchoChanged()" id="cbEchoSuppression" toolTip="works only with Basic Microphone" />
+                        </mx:HBox>
+                    </mx:Panel>
+                </mx:VBox>
+                <mx:VideoDisplay width="360" height="280" id="player"/>
+            </mx:HBox>
+
+        </mx:VBox>
+        <mx:TextArea height="100%" width="100%" id="console" editable="false"/>
+
+    </mx:HBox>
+
+</mx:Application>
