@@ -94,10 +94,9 @@
 
             // Generate dynamic url
             var url:String = this.loaderInfo.url;
-            var domainNPath:Array = url.match(/(:\/\/.+)\//);
             if (URLUtil.getProtocol(url) != "file") {
-                address.text = "rtmp" + domainNPath[1] + "/live/stream";
-                play_address.text = "rtmp" + domainNPath[1] + "/live/stream";
+                play_address.text = "rtmp://" + URLUtil.getServerName(url) + "/live/stream";
+                publish_address.text = "rtmp://" + URLUtil.getServerName(url) + "/live/stream";
             }
 
 
@@ -107,7 +106,7 @@
                 // Finally, automatically connect to the url in parameter
                 // url : host + path of the stream
                 if (loaderInfo.parameters.url) {
-                    address.text = loaderInfo.parameters.url;
+                    publish_address.text = loaderInfo.parameters.url;
                     connect();
                 }
             }
@@ -239,9 +238,9 @@
                 _connection = null;
             } else {
 
-                var lastSlash:int = address.text.lastIndexOf("/");
-                _urlPath = address.text.substr(0, lastSlash);
-                _publishName = address.text.substr(lastSlash + 1);
+                var lastSlash:int = publish_address.text.lastIndexOf("/");
+                _urlPath = publish_address.text.substr(0, lastSlash);
+                _publishName = publish_address.text.substr(lastSlash + 1);
                 if (_publishName == "" || _publishName == "VideoPublisher") {
                     Alert.show("Please type a publish name");
                     return;
@@ -437,7 +436,7 @@
                     <mx:Label text="Publisher" fontWeight="bold"/>
                     <mx:HBox width="100%">
                         <mx:Label text="Address"/>
-                        <mx:TextInput width="100%" text="rtmp://192.168.0.10/live/stream" id="address"/>
+                        <mx:TextInput width="100%" text="rtmp://192.168.0.10/live/stream" id="publish_address"/>
                         <mx:Button label="Publish" click="connect()" id="btPublish"/>
                     </mx:HBox>
                     <mx:Panel title="Video" width="100%">
