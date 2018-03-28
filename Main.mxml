@@ -68,6 +68,9 @@
 
         // init camera
         private function init():void {
+	    //Fix srs error
+	    NetConnection.defaultObjectEncoding = ObjectEncoding.AMF0;
+
             // Add RTMP video player
             _vid.opaqueBackground = 0x000000;
             _vid.smoothing = true;
