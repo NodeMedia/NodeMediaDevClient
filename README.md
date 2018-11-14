@@ -5,4 +5,4 @@ Flex开发的RTMP视频推流播放测试工具
 
 ## Online demo
 
-https://www.nodemedia.cn/uploads/NodeMediaDevClient.swf
+https://www.nodemedia.cn/uploads/NodeMediaDevClient.html
