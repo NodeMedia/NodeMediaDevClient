@@ -47,7 +47,7 @@
         [Bindable]
         private var listVideoCodec:ArrayList = new ArrayList(["H264 Baseline", "H264 Main", "Sorenson"]);
         [Bindable]
-        private var listAudioCodec:ArrayList = new ArrayList(["NellyMoser", "Speex", "Off"]);
+        private var listAudioCodec:ArrayList = new ArrayList(["NellyMoser", "Speex", "pcma", "pcmu", "Off"]);
         [Bindable]
         private var listEchoCancellation:ArrayList = new ArrayList(["Normal", "Headphones", "Usb Device", "Off", "Basic Micro"]);
         [Bindable]

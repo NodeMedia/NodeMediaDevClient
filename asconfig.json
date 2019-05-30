@@ -1,0 +1,9 @@
+{
+  "config": "flex",
+  "compilerOptions": {
+    "output": "bin/Main.swf"
+  },
+  "files": [
+    "src/Main.mxml"
+  ]
+}
